@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:aop="http://www.springframework.org/schema/aop"
+	xmlns:tx="http://www.springframework.org/schema/tx" xmlns:context="http://www.springframework.org/schema/context"
+	xmlns:util="http://www.springframework.org/schema/util" xmlns:jdbc="http://www.springframework.org/schema/jdbc"
+	xsi:schemaLocation=" 
+		http://www.springframework.org/schema/beans 
+		http://www.springframework.org/schema/beans/spring-beans-3.0.xsd 
+		http://www.springframework.org/schema/tx 
+		http://www.springframework.org/schema/tx/spring-tx-3.0.xsd
+		http://www.springframework.org/schema/context
+        http://www.springframework.org/schema/context/spring-context.xsd 
+        http://www.springframework.org/schema/util 
+        http://www.springframework.org/schema/util/spring-util.xsd
+        http://www.springframework.org/schema/jdbc 
+        http://www.springframework.org/schema/jdbc/spring-jdbc-3.0.xsd">
+
+	<bean id="messageSource"
+		class="org.springframework.context.support.ResourceBundleMessageSource">
+		<property name="basenames">
+			<list>
+				<value>exceptions</value>
+			</list>
+		</property>
+	</bean>
+
+	<context:property-placeholder
+		location="
+		classpath:jdbc.properties,
+		classpath:connections.properties,
+		classpath:smtp.properties,
+		classpath:hibernate.properties" />
+
+	<import resource="dataSourceBeans.xml" />
+
+	<bean id="sessionFactory"
+		class="org.springframework.orm.hibernate4.LocalSessionFactoryBean">
+		<property name="dataSource" ref="dataSource" />
+		<property name="annotatedClasses">
+			<list>
+				<value>au.com.trackingcentral.entities.DataPacket</value>
+			</list>
+		</property>
+		<property name="hibernateProperties">
+			<value>
+				hibernate.dialect=${hibernate.dialect}
+				hibernate.id.new_generator_mappings=true
+				hibernate.show_sql=true
+				hibernate.hbm2ddl.auto=update
+			</value>
+		</property>
+	</bean>
+	<bean id="transactionManager"
+		class="org.springframework.orm.hibernate4.HibernateTransactionManager">
+		<property name="sessionFactory" ref="sessionFactory" />
+	</bean>
+	<tx:annotation-driven transaction-manager="transactionManager"
+		proxy-target-class="true" />
+	
+	<bean id="processHttpCall" class="au.com.trackingcentral.utilities.ProcessHttpCall">
+	    <property name="processServer" value="${trackingcentral.processserver}" />
+	    <property name="processPort" value="${trackingcentral.processport}" />
+	    <property name="processURI" value="${trackingcentral.processuri}" />
+	</bean>
+
+	<bean id="dataPacketParser" class="au.com.trackingcentral.parsers.DataPacketParser">
+		<property name="dataPacketDTOFactory" ref="dataPacketDTOFactory" />
+	</bean>
+
+	<bean id="imeiValidationService" class="au.com.trackingcentral.services.IMEIValidationService">
+		<property name="liveTrackingDeviceMetaService" ref="liveTrackingDeviceMetaService" />
+	</bean>
+
+	<bean id="serverHandler" class="au.com.trackingcentral.handlers.DataPacketHandler">
+		<property name="dataPacketParser" ref="dataPacketParser" />
+		<property name="imeiValidationService" ref="imeiValidationService" />
+		<property name="dataPacketService" ref="dataPacketService" />
+		<property name="dataPacketForwarderHelper" ref="dataPacketForwarderHelper" />
+		<property name="liveTrackingDeviceMetaService" ref="liveTrackingDeviceMetaService" />
+		<property name="processHttpCall" ref="processHttpCall" />
+	</bean>
+	<bean id="forwarderHandler"
+		class="au.com.trackingcentral.handlers.DataPacketForwarderHandler"
+		scope="prototype" />
+
+	<bean id="loggingFilter" class="org.apache.mina.filter.logging.LoggingFilter" />
+	<bean id="mobileDataPacketFilter" class="org.apache.mina.filter.codec.ProtocolCodecFilter">
+		<constructor-arg>
+			<bean class="au.com.trackingcentral.codec.TrackingCodecFactory" />
+		</constructor-arg>
+	</bean>
+<!-- 	<bean id="mobileDataPacketFilter" class="org.apache.mina.filter.codec.ProtocolCodecFilter"> -->
+<!-- 		<constructor-arg> -->
+<!-- 			<bean class="org.apache.mina.filter.codec.textline.TextLineCodecFactory"> -->
+<!-- 				<constructor-arg> -->
+<!-- 					<bean class="java.nio.charset.Charset" factory-method="defaultCharset" /> -->
+<!-- 				</constructor-arg> -->
+<!-- 				<constructor-arg> -->
+<!-- 					<util:constant -->
+<!-- 						static-field="org.apache.mina.filter.codec.textline.LineDelimiter.AUTO" /> -->
+<!-- 				</constructor-arg> -->
+<!-- 				<constructor-arg> -->
+<!-- 					<util:constant -->
+<!-- 						static-field="org.apache.mina.filter.codec.textline.LineDelimiter.AUTO" /> -->
+<!-- 				</constructor-arg> -->
+<!-- 			</bean> -->
+<!-- 		</constructor-arg> -->
+<!-- 	</bean> -->
+
+	<!-- The filter chain. -->
+	<bean id="filterChainBuilder"
+		class="org.apache.mina.core.filterchain.DefaultIoFilterChainBuilder">
+		<property name="filters">
+			<map>
+				<entry key="loggingFilter" value-ref="loggingFilter" />
+				<entry key="mobileDataPacketFilter" value-ref="mobileDataPacketFilter" />
+			</map>
+		</property>
+	</bean>
+
+	<bean id="secondaryConnector" class="org.apache.mina.transport.socket.nio.NioSocketConnector">
+	    <property name="filterChainBuilder">
+	        <bean class="org.apache.mina.core.filterchain.DefaultIoFilterChainBuilder">
+	            <property name="filters">
+	                <map>
+	                    <entry key="loggingFilter" value-ref="loggingFilter" />
+	                    <entry key="mobileDataPacketFilter" value-ref="mobileDataPacketFilter" />
+	        		</map>           
+				</property>
+	        </bean>
+	    </property>
+	</bean>
+
+	<bean id="ioAcceptor" class="org.apache.mina.transport.socket.nio.NioSocketAcceptor"
+		init-method="bind" destroy-method="unbind">
+		<property name="defaultLocalAddress">
+			<bean class="java.net.InetSocketAddress">
+				<constructor-arg value="${trackingcentral.localhost}" />
+				<constructor-arg value="${trackingcentral.localport}" />
+			</bean>
+		</property>
+		<property name="handler" ref="serverHandler" />
+		<property name="filterChainBuilder" ref="filterChainBuilder" />
+	</bean>
+
+	<bean class="au.com.trackingcentral.clients.DataPacketForwarder">
+		<constructor-arg>
+			<bean class="java.net.InetSocketAddress">
+				<constructor-arg value="${trackingcentral.secondaryserverhost}" />
+				<constructor-arg value="${trackingcentral.secondaryserverport}" />
+			</bean>
+		</constructor-arg>
+		<constructor-arg ref="forwarderHandler" />
+		<constructor-arg ref="secondaryConnector" />
+	</bean>
+
+	<!-- Queries beans -->
+	<bean id="getLiveTrackingDeviceMetaByCommand"
+		class="au.com.trackingcentral.dao.queries.GetLiveTrackingDeviceMetaByCommand">
+		<constructor-arg ref="dataSource" />
+	</bean>
+
+	<!-- Helpers -->
+	<bean id="dataPacketDTOFactory" class="au.com.trackingcentral.helpers.DataPacketDTOFactory" />
+	<bean id="dataPacketForwarderHelper"
+		class="au.com.trackingcentral.helpers.DataPacketForwarderHelper" />
+
+	<!-- DAO -->
+	<bean id="dataPacketDAO" class="au.com.trackingcentral.dao.DataPacketDAO">
+		<property name="sessionFactory" ref="sessionFactory" />
+	</bean>
+	<bean id="liveTrackingDeviceMetaDAO" class="au.com.trackingcentral.dao.LiveTrackingDeviceMetaDAO">
+	</bean>
+
+	<!-- Services -->
+	<bean id="dataPacketService" class="au.com.trackingcentral.services.DataPacketService">
+		<property name="dataPacketDAO" ref="dataPacketDAO" />
+		<property name="dataPacketParser" ref="dataPacketParser" />
+	</bean>
+
+	<bean id="liveTrackingDeviceMetaService"
+		class="au.com.trackingcentral.services.LiveTrackingDeviceMetaService">
+		<property name="getLiveTrackingDeviceMetaByCommand" ref="getLiveTrackingDeviceMetaByCommand" />
+	</bean>
+
+	<bean id="emailFactory" class="au.com.trackingcentral.helpers.EmailFactory" />
+	<bean id="emailUtility" class="au.com.trackingcentral.utilities.EmailUtility">
+		<property name="hostname" value="${smtp.hostname}" />
+		<property name="port" value="${smtp.port}" />
+		<property name="receiver" value="${smtp.receiver}" />
+		<property name="username" value="${smtp.username}" />
+		<property name="password" value="${smtp.password}" />
+	</bean>
+</beans>
